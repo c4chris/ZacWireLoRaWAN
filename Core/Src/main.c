@@ -931,7 +931,10 @@ void StartWriteDebug(void const * argument)
 	unsigned int u1cc = __HAL_DMA_GET_COUNTER(huart1.hdmarx);
 	HAL_UART_Receive_DMA(&huart2, u2rx, 32);
 	unsigned int u2cc = __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+	// FIXME - so far I failed to use IDLE interrupts to know when receive transmission is done
 	//__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
+	// wait a few seconds to give the LoRa modem a chance to get ready
+  osDelay(10000);
   for(;;)
   {
   	long int temp = (long int) zw * 2000 / 2047 - 500;
@@ -1176,6 +1179,9 @@ void StartWriteDebug(void const * argument)
 	   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
 	  	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
   	}
+  	// FIXME - Nothing reads the modem output when the time is not elapsed
+  	// Could check for received data, e.g. :
+  	// # +RCV=99,4,22334400
   	if (ms == READY && uwTick - lastSend > pdMS_TO_TICKS( 30000 ))
   	{
   		len = snprintf((char *) u1tx, 256, "AT+JSTA\r");
@@ -1269,8 +1275,6 @@ void StartWriteDebug(void const * argument)
     	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
 		}
   	//HAL_GPIO_TogglePin(LED_Modem_GPIO_Port,LED_Modem_Pin);
-  	// Could check for received data, e.g. :
-  	// # +RCV=99,4,22334400
     osDelay(10000);
   }
   /* USER CODE END StartWriteDebug */
