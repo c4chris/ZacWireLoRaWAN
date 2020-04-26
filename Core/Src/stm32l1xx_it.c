@@ -323,11 +323,6 @@ void USART2_IRQHandler(void)
 void EXTI15_10_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI15_10_IRQn 0 */
-	if(__HAL_GPIO_EXTI_GET_FLAG(GPIO_PIN_10)){
-		// we got something from the ZacWire
-		extern volatile unsigned int zw;
-		zw += 1;
-	}
 	if(__HAL_GPIO_EXTI_GET_FLAG(GPIO_PIN_13)){
 		//HAL_GPIO_TogglePin(LD2_GPIO_Port,LD2_Pin);
 		extern volatile unsigned int btn;

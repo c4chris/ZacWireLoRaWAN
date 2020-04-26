@@ -75,6 +75,8 @@ osMutexId wireMutexHandle;
 
 volatile unsigned int btn;
 volatile unsigned int zw;
+volatile uint8_t HTS_h;
+volatile uint16_t HTS_t;
 volatile unsigned int u1rc;
 volatile unsigned int u1hrc;
 volatile unsigned int u1tc;
@@ -87,6 +89,10 @@ volatile unsigned int u2tc;
 volatile unsigned int u2htc;
 volatile unsigned int u2ec;
 volatile unsigned int u2ic;
+volatile unsigned int htsc;
+volatile unsigned int htss;
+volatile int16_t htsh;
+volatile int16_t htst;
 
 //unsigned int C1Low[16];
 //unsigned int C1High[16];
@@ -107,6 +113,14 @@ volatile uint8_t HTSValid;
 volatile uint8_t HTSValue;
 volatile uint8_t LPSValid;
 volatile uint8_t LPSValue;
+volatile uint8_t H0_rH_x2;
+volatile uint8_t H1_rH_x2;
+volatile uint16_t T0_degC_x8;
+volatile uint16_t T1_degC_x8;
+volatile int16_t H0_T0_OUT;
+volatile int16_t H1_T0_OUT;
+volatile int16_t T0_OUT;
+volatile int16_t T1_OUT;
 
 /* USER CODE END PV */
 
@@ -525,92 +539,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-// examples
-#if 0
-void powerTaskEntry(__unused void const* argument)
-{
-	static uint32_t thread_notification;
-
-	while(1)
-	{
-		/* Sleep until we are notified of a state change by an
-		 * interrupt handler. Note the first parameter is pdTRUE,
-		 * which has the effect of clearing the task's notification
-		 * value back to 0, making the notification value act like
-		 * a binary (rather than a counting) semaphore.  */
-
-		thread_notification = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-		if(thread_notification)
-		{
-			system_power_evaluate_state();
-		}
-	}
-}
-
-void system_power_interrupt_handler(uint32_t time)
-{
-	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-	if(time < SYS_RESET_SHUTDOWN_THRESHOLD_MS)
-	{
-		// Perform a reset of computers
-		computer_reset_request_ = RESET_ALL_COMPUTERS;
-	}
-	else if((time >= SYS_RESET_SHUTDOWN_THRESHOLD_MS) &&
-			(time < SYS_RESET_HARD_CUTOFF_THRESHOLD_MS))
-	{
-		system_power_request_state(SYSTEM_POWER_LOW);
-	}
-	else
-	{
-		system_power_request_state(SYSTEM_POWER_OFF_HARD);
-	}
-
-	// Notify the thread so it will wake up when the ISR is complete
-	vTaskNotifyGiveFromISR(powerTaskHandle,
-			&xHigherPriorityTaskWoken);
-	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-
-void tcinterrupt()
-{
-	BaseTypet xHigherPriorityTaskWoken = psFALSE;
-	/* Stop further interrupts to avoid time period shorter than 100 us. */
-	tc_stop_interrupt();
-	vTaskNotifyGiveFromISR( xCANTaskHandle, &xHigherPriorityTaskWoken );
-	portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
-}
-
-void vCANTask( void pvParameter )
-{
-	tc_initialise();
-	for( ;; )
-	{
-		/ Program the TC to issue an interrupt after 100 uS. /
-		tc_start_interrupt( 100 );
-		/ Will be woken-up by the timer-counter.
-		ulTaskNotifyTake( pdTRUE, portMAXDELAY );
-		cansend_message();
-	}
-}
-
-/* The peripheral driver's transmit function. */
-void StartTransmission( uint8_t *pcData, size_t xDataLength )
-{
-	/* At this point xTaskToNotify should be NULL as no transmission
-    is in progress.  A mutex can be used to guard access to the
-    peripheral if necessary. */
-	configASSERT( xTaskToNotify == NULL );
-
-	/* Store the handle of the calling task. */
-	xTaskToNotify = xTaskGetCurrentTaskHandle();
-
-	/* Start the transmission - an interrupt is generated when the
-    transmission is complete. */
-	vStartTransmit( pcData, xDatalength );
-}
-#endif
 /**
   * @brief  Input Capture callback in non blocking mode
   * @param  htim : TIM IC handle
@@ -683,28 +611,6 @@ TimerCapture_Ch2_Callback(void)
 			zw = (b1 << 8) | b2;
 		}
 	}
-#if 0
-	if (v1 < 256)
-	{
-		v1 >>= 4;
-		C1Low[v1] += 1;
-	}
-	else
-	{
-		v1 >>= 12;
-		C1High[v1] += 1;
-	}
-	if (v2 < 256)
-	{
-		v2 >>= 4;
-		C2Low[v2] += 1;
-	}
-	else
-	{
-		v2 >>= 12;
-		C2High[v2] += 1;
-	}
-#endif
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
@@ -757,6 +663,20 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 		u1ec += 1;
 	if (huart->Instance == USART2)
 		u2ec += 1;
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+	if(GPIO_Pin == HTS221_DRDY_Pin)
+	{
+		// we got something from the HTS
+		htsc += 1;
+    /* Notify the task that the transmission is complete. */
+    vTaskNotifyGiveFromISR(readWireHandle, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	}
 }
 
 int UART_Receive(unsigned char *dest, const unsigned char *rx, UART_HandleTypeDef *huart, unsigned int *uxcc, const unsigned int max)
@@ -825,85 +745,248 @@ void StartDefaultTask(void const * argument)
 /* USER CODE END Header_StartTaskReadWire */
 void StartTaskReadWire(void const * argument)
 {
+	const uint32_t I2C_Timeout = NUCLEO_I2C_EXPBD_TIMEOUT_MAX;
+	const TickType_t xMaxBlockTime = pdMS_TO_TICKS( I2C_Timeout );
+	uint32_t ulNotificationValue;
   /* USER CODE BEGIN StartTaskReadWire */
 	HAL_TIM_IC_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_2);
   /* Infinite loop */
+	enum status_t { INIT = 0, READY, BROKEN } hts = INIT;
 	for(;;)
 	{
-  	uint8_t addrBuf[1];
-  	uint8_t dataBuf[1];
+  	//uint8_t addrBuf[2];
+  	uint8_t dataBuf[16];
   	HAL_StatusTypeDef res;
     // Accelerometer + Magnetometer sensor - LSM303AGR
     // - I2C ADDw = 3Ch (Mag)
   	// WHO_AM_I_M R 4F 01001111 01000000
-  	addrBuf[0] = 0x4F;
-		res = HAL_I2C_Master_Transmit(&hi2c1, 0x3C, addrBuf, 1, 40);
+  	res = HAL_I2C_Mem_Read(&hi2c1, 0x3C, 0x4F, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
 		if (res != HAL_OK)
 			MagValid = 0;
 		else
 		{
-			res = HAL_I2C_Master_Receive(&hi2c1, 0x3C, dataBuf, 1, 60);
-			if (res != HAL_OK)
-				MagValid = 0;
-			else
-			{
-				MagValid = 1;
-				MagValue = dataBuf[0];
-			}
+			MagValid = 1;
+			MagValue = dataBuf[0];
 		}
     // - I2C ADDw = 32h (Acc)
   	// WHO_AM_I_A R 0F 000 1111 00110011
-  	addrBuf[0] = 0x0F;
-		res = HAL_I2C_Master_Transmit(&hi2c1, 0x32, addrBuf, 1, 40);
+  	res = HAL_I2C_Mem_Read(&hi2c1, 0x32, 0x0F, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
 		if (res != HAL_OK)
 			AccValid = 0;
 		else
 		{
-			res = HAL_I2C_Master_Receive(&hi2c1, 0x32, dataBuf, 1, 60);
-			if (res != HAL_OK)
-				AccValid = 0;
-			else
-			{
-				AccValid = 1;
-				AccValue = dataBuf[0];
-			}
+			AccValid = 1;
+			AccValue = dataBuf[0];
 		}
-    // Relative humidity and temperature sensor - HTS221
+		// Relative humidity and temperature sensor - HTS221
     // - I2C ADDw = BEh
 		// WHO_AM_I R 0F BC
-		res = HAL_I2C_Master_Transmit(&hi2c1, 0xBE, addrBuf, 1, 40);
-		if (res != HAL_OK)
-			HTSValid = 0;
-		else
+		/*
+		 * AV_CONF (10h)
+		 *
+		 *                7 6     5     4     3     2     1     0
+		 *           Reserved AVGT2 AVGT1 AVGT0 AVGH2 AVGH1 AVGH0
+		 *
+		 * [7:6] Reserved
+		 * [5:3] AVGT2-0: To select the numbers of averaged temperature samples (2 - 256)
+		 * [2:0] AVGH2-0: To select the numbers of averaged humidity samples (4 - 512)
+		 *
+		 * AVGx2:0      Nr. internal average             Noise (RMS)   IDD 1 Hz
+		 *         Temperature (AVGT) Humidity (AVGH)  Temp (°C) rH %     μA
+		 * 000               2               4           0.08    0.4     0.80
+		 * 001               4               8           0.05    0.3     1.05
+		 * 010               8              16           0.04    0.2     1.40
+		 * 011 (Default)    16              32           0.03    0.15    2.10
+		 * 100              32              64           0.02    0.1     3.43
+		 * 101              64             128           0.015   0.07    6.15
+		 * 110             128             256           0.01    0.05   11.60
+		 * 111             256             512           0.007   0.03   22.50
+		 *
+		 * CTRL_REG1 (20h)
+		 *
+		 *                                  7 6 5 4 3 2    1    0
+		 *                              PD Reserved BDU ODR1 ODR0
+		 *
+		 * [7] PD: power-down control                                  (0: power-down mode;                 1: active mode)
+		 * [6:3] Reserved
+		 * [2] BDU: block data update                                  (0: continuous update;               1: output registers not updated until MSB and LSB reading)
+		 * [1:0] ODR1, ODR0: output data rate selection
+		 *
+		 *   ODR1 ODR0 Humidity (Hz) Temperature (Hz)
+		 *      0    0           One-shot
+		 *      0    1     1 Hz             1 Hz
+		 *      1    0     7 Hz             7 Hz
+		 *      1    1    12.5 Hz          12.5 Hz
+		 *
+		 * CTRL_REG2 (21h)
+		 *
+		 *                            7 6 5 4 3 2      1        0
+		 *                         BOOT  Reserved Heater ONE_SHOT
+		 *
+		 * [7] BOOT: Reboot memory content                             (0: normal mode;                     1: reboot memory content)
+		 * [6:2] Reserved
+		 * [1] Heater                                                  (0: heater disable;                  1: heater enable)
+		 * [0] One-shot enable                                         (0: waiting for start of conversion; 1: start for a new dataset)
+		 *
+		 * CTRL_REG3 (22h)
+		 *
+		 *                         7     6    5 4 3    2      1 0
+		 *                  DRDY_H_L PP_OD Reserved DRDY Reserved
+		 *
+		 * [7] DRDY_H_L: Data Ready output signal active high, low     (0: active high - default;           1: active low)
+		 * [6] PP_OD: Push-pull / Open Drain selection on pin 3 (DRDY) (0: push-pull - default;             1: open drain)
+		 * [5:3] Reserved
+		 * [2] DRDY_EN: Data Ready enable                              (0: Data Ready disabled - default; 1: Data Ready signal available on pin 3)
+		 * [1:0] Reserved
+		 *
+		 * STATUS_REG (27h)
+		 *
+		 *                                  7 6 5 4 3 2    1    0
+		 *                                     Reserved H_DA T_DA
+		 *
+		 * [7:2] Reserved
+		 *   [1] H_DA: Humidity data available.    (0: new data for humidity is not yet available;    1: new data for humidity is available)
+		 *   [0] T_DA: Temperature data available. (0: new data for temperature is not yet available; 1: new data for temperature is available)
+		 * H_DA is set to 1 whenever a new humidity sample is available.    H_DA is cleared anytime HUMIDITY_OUT_H (29h) register is read.
+		 * T_DA is set to 1 whenever a new temperature sample is available. T_DA is cleared anytime TEMP_OUT_H     (2Bh) register is read.
+		 *
+		 * Output registers
+		 * 28 H_OUT      (s16)   H7   H6   H5   H4   H3   H2   H1   H0
+		 * 29                   H15  H14  H13  H12  H11  H10   H9   H8
+		 * 2A T_OUT      (s16)   T7   T6   T5   T4   T3   T2   T1   T0
+		 * 2B                   T15  T14  T13  T12  T11  T10   T9   T8
+		 *
+		 * Calibration registers
+		 * 30 H0_rH_x2   (u8)  H0.7 H0.6 H0.5 H0.4 H0.3 H0.2 H0.1 H0.1
+		 * 31 H1_rH_x2   (u8)  H1.7 H1.6 H1.5 H1.4 H1.3 H1.2 H1.1 H1.0
+		 * 32 T0_degC_x8 (u8)  T0.7 T0.6 T0.5 T0.4 T0.3 T0.2 T0.1 T0.0
+		 * 33 T1_degC_x8 (u8)  T1.7 T1.6 T1.5 T1.4 T1.3 T1.2 T1.1 T1.0
+		 * 34 Reserved   (u16)
+		 * 35 T1/T0 msb  (u2),(u2)        Reserved T1.9 T1.8 T0.9 T0.8
+		 * 36 H0_T0_OUT  (s16)    7    6    5    4    3    2    1    0
+		 * 37                    15   14   13   12   11   10    9    8
+		 * 38                    Reserved
+		 * 39
+		 * 3A H1_T0_OUT  (s16)    7    6    5    4    3    2    1    0
+		 * 3B                    15   14   13   12   11   10    9    8
+		 * 3C T0_OUT     (s16)    7    6    5    4    3    2    1    0
+		 * 3D                    15   14   13   12   11   10    9    8
+		 * 3E T1_OUT     (s16)    7    6    5    4    3    2    1    0
+		 * 3F                    15   14   13   12   11   10    9    8
+		 */
+		if (hts == INIT)
 		{
-			res = HAL_I2C_Master_Receive(&hi2c1, 0xBE, dataBuf, 1, 60);
+	  	res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x0F, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
 			if (res != HAL_OK)
+			{
 				HTSValid = 0;
+				hts = BROKEN;
+			}
 			else
 			{
 				HTSValid = 1;
 				HTSValue = dataBuf[0];
+				// reboot and power down to initialize
+				res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x20 | 0x80, I2C_MEMADD_SIZE_8BIT, dataBuf, 2, I2C_Timeout);
+			  /* HTS221 in power down */
+			  //buffer[0] |= 0x01 << HTS221_PD_BIT;
+			  dataBuf[0] |= 0x80;
+			  /* Make HTS221 boot */
+			  //buffer[1] |= 0x01 << HTS221_BOOT_BIT;
+			  dataBuf[1] |= 0x80;
+			  res = HAL_I2C_Mem_Write(&hi2c1, 0xBE, 0x20 | 0x80, I2C_MEMADD_SIZE_8BIT, dataBuf, 2, I2C_Timeout);
+			  /* Dump of data output */
+			  res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x28 | 0x80, I2C_MEMADD_SIZE_8BIT, dataBuf, 4, I2C_Timeout);
+				memset(dataBuf,0,16); // while testing
+		  	res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x30 | 0x80, I2C_MEMADD_SIZE_8BIT, dataBuf, 16, I2C_Timeout);
+				if (res == HAL_OK)
+				{
+					H0_rH_x2 = dataBuf[0];
+					H1_rH_x2 = dataBuf[1];
+					T0_degC_x8 = dataBuf[2] | ((dataBuf[5] & 3) << 8);
+					T1_degC_x8 = dataBuf[3] | ((dataBuf[5] & 0xc) << 6);
+					H0_T0_OUT = dataBuf[6] | (dataBuf[7] << 8);
+					H1_T0_OUT = dataBuf[10] | (dataBuf[11] << 8);
+					T0_OUT = dataBuf[12] | (dataBuf[13] << 8);
+					T1_OUT = dataBuf[14] | (dataBuf[15] << 8);
+					// enable the data ready pin output
+					res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x22, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
+					if (res == HAL_OK)
+					{
+						dataBuf[0] |= 4;
+						res = HAL_I2C_Mem_Write(&hi2c1, 0xBE, 0x22, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
+						if (res == HAL_OK)
+						{
+							// need to power up the device
+							dataBuf[0] = 0x84; // power up, BDU, one shot
+							res = HAL_I2C_Mem_Write(&hi2c1, 0xBE, 0x20, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
+							if (res == HAL_OK)
+								hts = READY;
+						}
+					}
+				}
 			}
+		}
+		else if (hts == READY)
+		{
+			// send as one-shot request
+			dataBuf[0] = 1;
+			res = HAL_I2C_Mem_Write(&hi2c1, 0xBE, 0x21, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
+			if (res == HAL_OK)
+			{
+				ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+				if (ulNotificationValue == 1)
+				{
+					// check that we have the results
+					res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x27, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
+					if (res == HAL_OK)
+					{
+						htss = dataBuf[0];
+						memset(dataBuf,0,4); // while testing
+						res = HAL_I2C_Mem_Read(&hi2c1, 0xBE, 0x28 | 0x80, I2C_MEMADD_SIZE_8BIT, dataBuf, 4, I2C_Timeout);
+						if (res == HAL_OK)
+						{
+							htsh = dataBuf[0] | (dataBuf[1] << 8);
+							htst = dataBuf[2] | (dataBuf[3] << 8);
+							// convert (linear extrapolation)
+						  float tmp_f = (float)(htsh - H0_T0_OUT) * (float)(H1_rH_x2 - H0_rH_x2) / (float)(H1_T0_OUT - H0_T0_OUT) + H0_rH_x2;
+							HTS_h =
+									( tmp_f > 200.0f ) ? 200
+											: ( tmp_f <    0.0f ) ?    0
+											: ( uint8_t )tmp_f;
+						  tmp_f = (float)(htst - T0_OUT) * (float)(T1_degC_x8 - T0_degC_x8) / (float)(T1_OUT - T0_OUT) + T0_degC_x8;
+						  tmp_f /= 8.0;
+						  tmp_f *= 10.0f;
+							HTS_t = ( int16_t )tmp_f;
+						}
+						else
+						{
+							htsh = -1;
+							htst = -1;
+						}
+					}
+					else
+						htss = 1014;
+				}
+				else
+					htss = 1013;
+			}
+			else
+				htss = 1012;
 		}
     // Pressure sensor - LPS22HB
     // - I2C ADDw = BAh
 		// WHO_AM_I R 0F 10110001
-		res = HAL_I2C_Master_Transmit(&hi2c1, 0xBA, addrBuf, 1, 40);
+  	res = HAL_I2C_Mem_Read(&hi2c1, 0xBA, 0x0F, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
 		if (res != HAL_OK)
 			LPSValid = 0;
 		else
 		{
-			res = HAL_I2C_Master_Receive(&hi2c1, 0xBA, dataBuf, 1, 60);
-			if (res != HAL_OK)
-				LPSValid = 0;
-			else
-			{
-				LPSValid = 1;
-				LPSValue = dataBuf[0];
-			}
+			LPSValid = 1;
+			LPSValue = dataBuf[0];
 		}
-		osDelay(1000);
+		osDelay(5000);
 	}
   /* USER CODE END StartTaskReadWire */
 }
@@ -936,7 +1019,8 @@ void StartWriteDebug(void const * argument)
   for(;;)
   {
   	long int temp = (long int) zw * 2000 / 2047 - 500;
-  	int len = snprintf((char *) dbgBuf, 256, "\r\nuwTick = %lu cur = %u btn = %u zw = %u T = %u.%u\r\n", uwTick, cur++, btn, zw, (unsigned int) temp / 10, (unsigned int) temp % 10);
+  	int len = snprintf((char *) dbgBuf, 256, "\r\nuwTick = %lu cur = %u btn = %u zw = %u T = %u.%u %u.%u %u.%u%%\r\n",
+											 uwTick, cur++, btn, zw, (unsigned int) temp / 10, (unsigned int) temp % 10, HTS_t / 10, HTS_t % 10, HTS_h / 2, (HTS_h % 2) * 5);
   	// HAL_UART_Transmit(&huart2, dbgBuf, len, xMaxBlockTime);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	/* Could specify which task to wake up, but for now it is fixed. */
@@ -953,6 +1037,14 @@ void StartWriteDebug(void const * argument)
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
   	len = snprintf((char *) dbgBuf, 256, "u2rc = %u u2hrc = %u u2tc = %u u2htc = %u u2ec = %u u2ic = %u u2cc = %u\r\n", u2rc, u2hrc, u2tc, u2htc, u2ec, u2ic, u2cc);
+  	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
+  	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+#if 0
+  	len = snprintf((char *) dbgBuf, 256, "H0_rH_x2 %u H1_rH_x2 %u T0_degC_x8 %u T1_degC_x8 %u H0_T0_OUT %d H1_T0_OUT %d T0_OUT %d T1_OUT %d\r\n", H0_rH_x2, H1_rH_x2, T0_degC_x8, T1_degC_x8, H0_T0_OUT, H1_T0_OUT, T0_OUT, T1_OUT);
+  	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
+  	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+#endif
+  	len = snprintf((char *) dbgBuf, 256, "htsc = %u htss = %u htsh = %d htst = %d\r\n", htsc, htss, htsh, htst);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
   	unsigned int cc = __HAL_DMA_GET_COUNTER(huart2.hdmarx);
@@ -978,33 +1070,6 @@ void StartWriteDebug(void const * argument)
     	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
     	u2cc = cc;
   	}
-#if 0
-  	int i;
-  	len = 0;
-  	for (i = 0; i < 16; i++)
-  		len += snprintf((char *) dbgBuf + len, 256 - len, "%s%u%s", (i > 0) ? " " : "C1Low : ", C1Low[i], (i == 15) ? "\r\n" : "");
-  	HAL_UART_Transmit(&huart2, dbgBuf, len, 65536);
-  	len = 0;
-  	for (i = 0; i < 16; i++)
-  		len += snprintf((char *) dbgBuf + len, 256 - len, "%s%u%s", (i > 0) ? " " : "C1High : ", C1High[i], (i == 15) ? "\r\n" : "");
-  	HAL_UART_Transmit(&huart2, dbgBuf, len, 65536);
-  	len = 0;
-  	for (i = 0; i < 16; i++)
-  		len += snprintf((char *) dbgBuf + len, 256 - len, "%s%u%s", (i > 0) ? " " : "C2Low : ", C2Low[i], (i == 15) ? "\r\n" : "");
-  	HAL_UART_Transmit(&huart2, dbgBuf, len, 65536);
-  	len = 0;
-  	for (i = 0; i < 16; i++)
-  		len += snprintf((char *) dbgBuf + len, 256 - len, "%s%u%s", (i > 0) ? " " : "C2High : ", C2High[i], (i == 15) ? "\r\n" : "");
-  	HAL_UART_Transmit(&huart2, dbgBuf, len, 65536);
-  	len = 0;
-  	for (i = 0; i < 20; i++)
-  		len += snprintf((char *) dbgBuf + len, 256 - len, "%s%u%s", (i > 0) ? " " : "sF : ", sF[i], (i == 19) ? "\r\n" : "");
-  	HAL_UART_Transmit(&huart2, dbgBuf, len, 65536);
-  	len = 0;
-  	for (i = 0; i < 20; i++)
-  		len += snprintf((char *) dbgBuf + len, 256 - len, "%s%u%s", (i > 0) ? " " : "sR : ", sR[i], (i == 19) ? "\r\n" : "");
-  	HAL_UART_Transmit(&huart2, dbgBuf, len, 65536);
-#endif
   	len = 0;
 		if (MagValid)
 			len += snprintf((char *) dbgBuf + len, 256 - len, "Mag: %02X(%s) ", MagValue, MagValue == 0x40 ? "Ok" : "??");

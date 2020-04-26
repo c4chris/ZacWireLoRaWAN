@@ -94,6 +94,9 @@ void TimerCapture_Ch2_Callback(void);
 #define ZacWire_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 
+/* from Drivers/BSP/I_NUCLEO_LRWAN1/i_nucleo_lrwan1.h */
+#define NUCLEO_I2C_EXPBD_TIMEOUT_MAX    0x1000 /*<! The value of the maximal timeout for BUS waiting loops */
+
 /* Cayenne LPP C/C++ constants definitions */
 #define LPP_DIGITAL_INPUT       0       // 1 byte
 #define LPP_DIGITAL_OUTPUT      1       // 1 byte
