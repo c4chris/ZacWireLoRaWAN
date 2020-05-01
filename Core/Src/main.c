@@ -1328,8 +1328,22 @@ void StartWriteDebug(void const * argument)
   		if (isRetOk(dbgBuf, len, "1\r\nOK\r"))
   		{
   			// LPP_TEMPERATURE         103     // 2 bytes, 0.1°C signed
+  			// LPP_RELATIVE_HUMIDITY   104     // 1 byte, 0.5% unsigned
+  			// LPP_BAROMETRIC_PRESSURE 115     // 2 bytes 0.1 hPa Unsigned
   	  	HAL_GPIO_TogglePin(LED_Modem_GPIO_Port,LED_Modem_Pin);
-    		len = snprintf((char *) u1tx, 256, "AT+SEND=%u,%02X%02X%02X%02X,%u\r",99,1,LPP_TEMPERATURE,(unsigned char) (temp >> 8) & 0xff,(unsigned char) temp & 0xff,0);
+    		len = snprintf((char *) u1tx, 256, "AT+SEND=%u," // SEND command to channel 99
+											 "%02X%02X%02X%02X" // item 1 - temperature from ZacWire
+											 "%02X%02X%02X%02X" // item 2 - temperature from HTS
+											 "%02X%02X%02X" // item 3 - humidity from HTS
+											 "%02X%02X%02X%02X" // item 4 - temperature from LPS
+											 "%02X%02X%02X%02X" // item 5 - pressure from LPS
+											 ",%u\r",99,
+											 1,LPP_TEMPERATURE,(unsigned char) (temp >> 8) & 0xff,(unsigned char) temp & 0xff, // item 1 - temperature from ZacWire
+											 2,LPP_TEMPERATURE,(unsigned char) (HTS_t >> 8) & 0xff,(unsigned char) HTS_t & 0xff, // item 2 - temperature from HTS
+											 3,LPP_RELATIVE_HUMIDITY,HTS_h, // item 3 - humidity from HTS
+											 4,LPP_TEMPERATURE,(unsigned char) ((ptst / 10) >> 8) & 0xff,(unsigned char) (ptst / 10) & 0xff, // item 4 - temperature from LPS
+											 5,LPP_BAROMETRIC_PRESSURE,(unsigned char) ((ptsp * 10 / 4096) >> 8) & 0xff,(unsigned char) (ptsp * 10 / 4096) & 0xff, // item 5 - pressure from LPS
+											 0); // no ack requested
     		res = HAL_UART_Transmit_DMA(&huart1, u1tx, len);
     		ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
       	HAL_GPIO_TogglePin(LED_Modem_GPIO_Port,LED_Modem_Pin);
