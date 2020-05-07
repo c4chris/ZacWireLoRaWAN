@@ -92,6 +92,10 @@ void TimerCapture_Ch2_Callback(void);
 #define LPS22H_INT1_EXTI_IRQn EXTI4_IRQn
 #define ZacWire_Pin GPIO_PIN_7
 #define ZacWire_GPIO_Port GPIOB
+#define I2C1_SCL_Pin GPIO_PIN_8
+#define I2C1_SCL_GPIO_Port GPIOB
+#define I2C1_SDA_Pin GPIO_PIN_9
+#define I2C1_SDA_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 
 /* from Drivers/BSP/I_NUCLEO_LRWAN1/i_nucleo_lrwan1.h */

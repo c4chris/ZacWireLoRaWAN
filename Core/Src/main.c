@@ -757,10 +757,10 @@ void StartDefaultTask(void const * argument)
 /* USER CODE END Header_StartTaskReadWire */
 void StartTaskReadWire(void const * argument)
 {
+  /* USER CODE BEGIN StartTaskReadWire */
 	const uint32_t I2C_Timeout = NUCLEO_I2C_EXPBD_TIMEOUT_MAX;
 	const TickType_t xMaxBlockTime = pdMS_TO_TICKS( I2C_Timeout );
 	uint32_t ulNotificationValue;
-  /* USER CODE BEGIN StartTaskReadWire */
 	HAL_TIM_IC_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_2);
   /* Infinite loop */
