@@ -98,6 +98,9 @@ void TimerCapture_Ch2_Callback(void);
 #define I2C1_SDA_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 
+/* debug messages */
+#define PRINT_DEBUG_INFO 0
+
 /* from Drivers/BSP/I_NUCLEO_LRWAN1/i_nucleo_lrwan1.h */
 #define NUCLEO_I2C_EXPBD_TIMEOUT_MAX    0x1000 /*<! The value of the maximal timeout for BUS waiting loops */
 

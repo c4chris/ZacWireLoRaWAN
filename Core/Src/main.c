@@ -93,10 +93,10 @@ volatile unsigned int htsc;
 volatile unsigned int htss;
 volatile int16_t htsh;
 volatile int16_t htst;
-volatile unsigned int ptsc;
-volatile unsigned int ptss;
-volatile int32_t ptsp;
-volatile int16_t ptst;
+volatile unsigned int lpsc;
+volatile unsigned int lpss;
+volatile int32_t lpsp;
+volatile int16_t lpst;
 
 //unsigned int C1Low[16];
 //unsigned int C1High[16];
@@ -125,6 +125,8 @@ volatile int16_t H0_T0_OUT;
 volatile int16_t H1_T0_OUT;
 volatile int16_t T0_OUT;
 volatile int16_t T1_OUT;
+volatile uint8_t I2Creset;
+volatile uint8_t I2Crecovered;
 
 /* USER CODE END PV */
 
@@ -684,7 +686,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	if(GPIO_Pin == LPS22H_INT1_Pin)
 	{
 		// we got something from the HTS
-		ptsc += 1;
+		lpsc += 1;
     /* Notify the task that the transmission is complete. */
     vTaskNotifyGiveFromISR(readWireHandle, &xHigherPriorityTaskWoken);
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -764,7 +766,8 @@ void StartTaskReadWire(void const * argument)
 	HAL_TIM_IC_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_2);
   /* Infinite loop */
-	enum status_t { INIT = 0, READY, BROKEN } hts = INIT, pts = INIT;
+	enum status_t { INIT = 0, READY, BROKEN } hts = INIT, lps = INIT;
+	uint8_t brokenCnt = 0;
 	for(;;)
 	{
   	//uint8_t addrBuf[2];
@@ -985,16 +988,22 @@ void StartTaskReadWire(void const * argument)
 					htss = 1013;
 			}
 			else
-				htss = 1012;
+			{
+				HTSValid = 0;
+				hts = BROKEN;
+			}
 		}
     // Pressure sensor - LPS22HB
     // - I2C ADDw = BAh
 		// WHO_AM_I R 0F 10110001
-		if (pts == INIT)
+		if (lps == INIT)
 		{
 	  	res = HAL_I2C_Mem_Read(&hi2c1, 0xBA, 0x0F, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
 			if (res != HAL_OK)
+			{
 				LPSValid = 0;
+				lps = BROKEN;
+			}
 			else
 			{
 				LPSValid = 1;
@@ -1012,10 +1021,10 @@ void StartTaskReadWire(void const * argument)
 			  // CTRL_REG3 (12h) - Control register 3 - INT_DRDY pin control register
 			  dataBuf[0] = 0x04; // request DRDY assertion when data is ready to read
 			  res = HAL_I2C_Mem_Write(&hi2c1, 0xBA, 0x12, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
-			  pts = READY;
+			  lps = READY;
 			}
 		}
-		else if (pts == READY)
+		else if (lps == READY)
 		{
 			// STATUS (27h)
 			// send as one-shot request
@@ -1031,32 +1040,64 @@ void StartTaskReadWire(void const * argument)
 					res = HAL_I2C_Mem_Read(&hi2c1, 0xBA, 0x27, I2C_MEMADD_SIZE_8BIT, dataBuf, 1, I2C_Timeout);
 					if (res == HAL_OK)
 					{
-						ptss = dataBuf[0];
+						lpss = dataBuf[0];
 						memset(dataBuf,0,5); // while testing
 						res = HAL_I2C_Mem_Read(&hi2c1, 0xBA, 0x28 | 0x80, I2C_MEMADD_SIZE_8BIT, dataBuf, 5, I2C_Timeout);
 						if (res == HAL_OK)
 						{
-							ptsp = dataBuf[0] | (dataBuf[1] << 8) | (dataBuf[2] << 16);
-							ptst = dataBuf[3] | (dataBuf[4] << 8);
-						  if(ptsp & 0x00800000)
-						  	ptsp |= 0xFF000000; // propagate 2's complement on 32 bits
+							lpsp = dataBuf[0] | (dataBuf[1] << 8) | (dataBuf[2] << 16);
+							lpst = dataBuf[3] | (dataBuf[4] << 8);
+						  if(lpsp & 0x00800000)
+						  	lpsp |= 0xFF000000; // propagate 2's complement on 32 bits
 						}
 						else
 						{
-							ptsp = -1;
-							ptst = -1;
+							lpsp = -1;
+							lpst = -1;
 						}
 					}
 					else
-						ptss = 1014;
+						lpss = 1014;
 				}
 				else
-					ptss = 1013;
+					lpss = 1013;
 			}
 			else
-				ptss = 1012;
+			{
+				LPSValid = 0;
+				lps = BROKEN;
+			}
 		}
 		osDelay(5000);
+		if (MagValid == 0 || AccValid == 0 || HTSValid == 0 || LPSValid == 0)
+		{
+			brokenCnt += 1;
+			if (brokenCnt >= 5)
+			{
+				I2Creset += 1;
+				hts = INIT;
+				lps = INIT;
+				HAL_I2C_MspDeInit(&hi2c1);
+				osDelay(100);
+				HAL_I2C_MspInit(&hi2c1);
+			}
+			else
+			{
+				if (HTSValid == 0)
+					hts = INIT;
+				if (LPSValid == 0)
+					lps = INIT;
+			}
+		}
+		else
+		{
+			if (brokenCnt > 0)
+			{
+				if (brokenCnt >= 5)
+					I2Crecovered += 1;
+				brokenCnt = 0;
+			}
+		}
 	}
   /* USER CODE END StartTaskReadWire */
 }
@@ -1090,7 +1131,7 @@ void StartWriteDebug(void const * argument)
   {
   	long int temp = (long int) zw * 2000 / 2047 - 500;
   	int len = snprintf((char *) dbgBuf, 256, "\r\nuwTick = %lu cur = %u btn = %u zw = %u T = %u.%u %u.%u %u.%u%% %u.%02u %lu\r\n",
-											 uwTick, cur++, btn, zw, (unsigned int) temp / 10, (unsigned int) temp % 10, HTS_t / 10, HTS_t % 10, HTS_h / 2, (HTS_h % 2) * 5, ptst / 100, ptst % 100, ptsp / 4096);
+											 uwTick, cur++, btn, zw, (unsigned int) temp / 10, (unsigned int) temp % 10, HTS_t / 10, HTS_t % 10, HTS_h / 2, (HTS_h % 2) * 5, lpst / 100, lpst % 100, lpsp / 4096);
   	// HAL_UART_Transmit(&huart2, dbgBuf, len, xMaxBlockTime);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	/* Could specify which task to wake up, but for now it is fixed. */
@@ -1103,23 +1144,23 @@ void StartWriteDebug(void const * argument)
   		len = snprintf((char *) dbgBuf, 256, "ulNotificationValue = %lu - seems bad\r\n", ulNotificationValue);
   		HAL_UART_Transmit(&huart2, dbgBuf, len, xMaxBlockTime);
   	}
+#if PRINT_DEBUG_INFO
   	len = snprintf((char *) dbgBuf, 256, "u1rc = %u u1hrc = %u u1tc = %u u1htc = %u u1ec = %u u1ic = %u u1cc = %u\r\n", u1rc, u1hrc, u1tc, u1htc, u1ec, u1ic, u1cc);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
   	len = snprintf((char *) dbgBuf, 256, "u2rc = %u u2hrc = %u u2tc = %u u2htc = %u u2ec = %u u2ic = %u u2cc = %u\r\n", u2rc, u2hrc, u2tc, u2htc, u2ec, u2ic, u2cc);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
-#if 0
   	len = snprintf((char *) dbgBuf, 256, "H0_rH_x2 %u H1_rH_x2 %u T0_degC_x8 %u T1_degC_x8 %u H0_T0_OUT %d H1_T0_OUT %d T0_OUT %d T1_OUT %d\r\n", H0_rH_x2, H1_rH_x2, T0_degC_x8, T1_degC_x8, H0_T0_OUT, H1_T0_OUT, T0_OUT, T1_OUT);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
-#endif
   	len = snprintf((char *) dbgBuf, 256, "htsc = %u htss = %u htsh = %d htst = %d\r\n", htsc, htss, htsh, htst);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
-  	len = snprintf((char *) dbgBuf, 256, "ptsc = %u ptss = %u ptsp = %ld ptst = %d\r\n", ptsc, ptss, ptsp, ptst);
+  	len = snprintf((char *) dbgBuf, 256, "lpsc = %u lpss = %u lpsp = %ld lpst = %d\r\n", lpsc, lpss, lpsp, lpst);
   	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+#endif
   	unsigned int cc = __HAL_DMA_GET_COUNTER(huart2.hdmarx);
   	if (u2cc != cc)
   	{
@@ -1157,9 +1198,10 @@ void StartWriteDebug(void const * argument)
 		else
 			len += snprintf((char *) dbgBuf + len, 256 - len, "HTS failed ");
 		if (LPSValid)
-			len += snprintf((char *) dbgBuf + len, 256 - len, "LPS: %02X(%s)\r\nUART1 says :\r\n\r\n", LPSValue, LPSValue == 0xB1 ? "Ok" : "??");
+			len += snprintf((char *) dbgBuf + len, 256 - len, "LPS: %02X(%s) ", LPSValue, LPSValue == 0xB1 ? "Ok" : "??");
 		else
-			len += snprintf((char *) dbgBuf + len, 256 - len, "LPS failed\r\n");
+			len += snprintf((char *) dbgBuf + len, 256 - len, "LPS failed ");
+		len += snprintf((char *) dbgBuf + len, 256 - len, "%u %u\r\n", I2Creset, I2Crecovered);
 		HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
   	if (ms == INIT)
@@ -1341,8 +1383,8 @@ void StartWriteDebug(void const * argument)
 											 1,LPP_TEMPERATURE,(unsigned char) (temp >> 8) & 0xff,(unsigned char) temp & 0xff, // item 1 - temperature from ZacWire
 											 2,LPP_TEMPERATURE,(unsigned char) (HTS_t >> 8) & 0xff,(unsigned char) HTS_t & 0xff, // item 2 - temperature from HTS
 											 3,LPP_RELATIVE_HUMIDITY,HTS_h, // item 3 - humidity from HTS
-											 4,LPP_TEMPERATURE,(unsigned char) ((ptst / 10) >> 8) & 0xff,(unsigned char) (ptst / 10) & 0xff, // item 4 - temperature from LPS
-											 5,LPP_BAROMETRIC_PRESSURE,(unsigned char) ((ptsp * 10 / 4096) >> 8) & 0xff,(unsigned char) (ptsp * 10 / 4096) & 0xff, // item 5 - pressure from LPS
+											 4,LPP_TEMPERATURE,(unsigned char) ((lpst / 10) >> 8) & 0xff,(unsigned char) (lpst / 10) & 0xff, // item 4 - temperature from LPS
+											 5,LPP_BAROMETRIC_PRESSURE,(unsigned char) ((lpsp * 10 / 4096) >> 8) & 0xff,(unsigned char) (lpsp * 10 / 4096) & 0xff, // item 5 - pressure from LPS
 											 0); // no ack requested
     		res = HAL_UART_Transmit_DMA(&huart1, u1tx, len);
     		ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
