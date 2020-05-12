@@ -127,6 +127,7 @@ volatile int16_t T0_OUT;
 volatile int16_t T1_OUT;
 volatile uint8_t I2Creset;
 volatile uint8_t I2Crecovered;
+volatile uint8_t UARTrecovered;
 
 /* USER CODE END PV */
 
@@ -1201,7 +1202,7 @@ void StartWriteDebug(void const * argument)
 			len += snprintf((char *) dbgBuf + len, 256 - len, "LPS: %02X(%s) ", LPSValue, LPSValue == 0xB1 ? "Ok" : "??");
 		else
 			len += snprintf((char *) dbgBuf + len, 256 - len, "LPS failed ");
-		len += snprintf((char *) dbgBuf + len, 256 - len, "%u %u\r\n", I2Creset, I2Crecovered);
+		len += snprintf((char *) dbgBuf + len, 256 - len, "I2C %u %u UART %u\r\n", I2Creset, I2Crecovered, UARTrecovered);
 		HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
   	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
   	if (ms == INIT)
@@ -1465,6 +1466,22 @@ void StartWriteDebug(void const * argument)
     	len = UART_Receive(dbgBuf, u1rx, &huart1, &u1cc, 64);
      	HAL_UART_Transmit_DMA(&huart2, dbgBuf, len);
     	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+    	// See if we can recover
+    	len = snprintf((char *) u1tx, 256, "%s\r", "ATZ");
+  		res = HAL_UART_Transmit_DMA(&huart1, u1tx, len);
+    	ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+  		len = 0;
+  		if (res == HAL_OK && ulNotificationValue == 1)
+  		{
+  			osDelay(100);
+  			len = UART_Receive(dbgBuf, u1rx, &huart1, &u1cc, 64);
+  			// see if we got OK
+  			if (isRetOk(dbgBuf, len, "OK\r"))
+  	  	{
+  	  		ms = INIT;
+  	    	UARTrecovered += 1;
+  	  	}
+  		}
 		}
   	//HAL_GPIO_TogglePin(LED_Modem_GPIO_Port,LED_Modem_Pin);
     osDelay(10000);
