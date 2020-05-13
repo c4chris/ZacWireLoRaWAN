@@ -1072,18 +1072,19 @@ void StartTaskReadWire(void const * argument)
 		osDelay(5000);
 		if (MagValid == 0 || AccValid == 0 || HTSValid == 0 || LPSValid == 0)
 		{
-			brokenCnt += 1;
 			if (brokenCnt >= 5)
 			{
 				I2Creset += 1;
 				hts = INIT;
 				lps = INIT;
-				HAL_I2C_MspDeInit(&hi2c1);
+				HAL_I2C_DeInit(&hi2c1);
 				osDelay(100);
-				HAL_I2C_MspInit(&hi2c1);
+				HAL_I2C_Init(&hi2c1);
+				osDelay(100);
 			}
 			else
 			{
+				brokenCnt += 1;
 				if (HTSValid == 0)
 					hts = INIT;
 				if (LPSValid == 0)
